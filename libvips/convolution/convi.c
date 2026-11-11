@@ -176,6 +176,7 @@ typedef struct {
 	int nnz;		/* Number of non-zero mask elements */
 	int *coeff;		/* Array of non-zero mask coefficients */
 	int *coeff_pos; /* Index of each nnz element in mask->coeff */
+	gboolean sum64;
 
 #if defined(HAVE_HWY) || defined(HAVE_ORC)
 	/* And a half float version for the vector paths. mant has the signed
@@ -701,14 +702,14 @@ vips_convi_gen_vector(VipsRegion *out_region,
 
 /* INT inner loops.
  */
-#define CONV_INT(TYPE, CLIP) \
+#define CONV_INT_SUM(TYPE, CLIP, SUM) \
 	{ \
 		TYPE *restrict p = (TYPE *) VIPS_REGION_ADDR(ir, le, y); \
 		TYPE *restrict q = (TYPE *) VIPS_REGION_ADDR(out_region, le, y); \
 		int *restrict offsets = seq->offsets; \
 \
 		for (x = 0; x < sz; x++) { \
-			VIPS_CONVI_INT128 sum; \
+			SUM sum; \
 			int i; \
 \
 			sum = 0; \
@@ -720,6 +721,14 @@ vips_convi_gen_vector(VipsRegion *out_region,
 			q[x] = sum; \
 			p += 1; \
 		} \
+	}
+
+#define CONV_INT(TYPE, CLIP) \
+	{ \
+		if (convi->sum64) \
+			CONV_INT_SUM(TYPE, CLIP, int64_t) \
+		else \
+			CONV_INT_SUM(TYPE, CLIP, VIPS_CONVI_INT128) \
 	}
 
 /* FLOAT inner loops.
@@ -1212,6 +1221,13 @@ vips_convi_build(VipsObject *object)
 			convi->coeff_pos[0] = 0;
 			convi->nnz = 1;
 		}
+
+		double max_sum = fabs(rint(vips_image_get_scale(M))) / 2;
+		double max_pixel =
+			vips_image_get_format_max(in->BandFmt) + 1;
+		for (i = 0; i < convi->nnz; i++)
+			max_sum += fabs(convi->coeff[i]) * max_pixel;
+		convi->sum64 = max_sum < (double) INT64_MAX / 2;
 	}
 
 	g_object_set(convi, "out", vips_image_new(), NULL);
